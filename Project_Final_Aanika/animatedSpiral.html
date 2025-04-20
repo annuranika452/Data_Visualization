@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Netflix Content Spiral Timeline</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #fff;
+      color: #333;
+      margin: 0;
+      padding: 0;
+    }
+    .container {
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    h1 {
+      color: #E50914;
+      margin-bottom: 10px;
+      text-align: center;
+      font-size: 28px;
+    }
+    .description {
+      color: #666;
+      margin-bottom: 20px;
+      line-height: 1.5;
+      text-align: center;
+      font-size: 16px;
+    }
+    .controls {
+      margin: 20px 0;
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    button {
+      padding: 8px 16px;
+      background: #f5f5f5;
+      border: 1px solid #ddd;
+      border-radius: 20px;
+      cursor: pointer;
+      transition: all 0.2s;
+      font-size: 14px;
+    }
+    button:hover {
+      background: #E50914;
+      color: white;
+    }
+    button.active {
+      background: #E50914;
+      color: white;
+    }
+    .tooltip {
+      position: absolute;
+      background: white;
+      padding: 10px;
+      border: 1px solid #E50914;
+      border-radius: 5px;
+      pointer-events: none;
+      font-size: 14px;
+      opacity: 0;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+      max-width: 300px;
+      z-index: 100;
+    }
+    .viz-container {
+      width: 100%;
+      margin: 20px 0;
+    }
+    #spiralSvg {
+      display: block;
+      margin: 0 auto;
+      background: #f9f9f9;
+      border-radius: 10px;
+    }
+    .legend {
+      display: flex;
+      justify-content: center;
+      flex-wrap: wrap;
+      gap: 15px;
+      margin: 20px 0;
+      font-size: 14px;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .legend-color {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+    }
+    .year-group-label {
+      font-size: 14px;
+      font-weight: bold;
+      fill: #E50914;
+      text-shadow: 0 0 3px white;
+    }
+    .stats {
+      background: #f5f5f5;
+      padding: 15px;
+      border-radius: 8px;
+      margin: 20px 0;
+      font-size: 14px;
+    }
+    .stats p {
+      margin: 5px 0;
+    }
+    .error {
+      color: #E50914;
+      font-weight: bold;
+      margin: 20px 0;
+      text-align: center;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Netflix Content Spiral Timeline</h1>
+    
+    <div class="description">
+      <p>This visualization shows when content was added to Netflix, with each spiral loop representing a 5-year period. 
+      Points are positioned by release date within each period.</p>
+    </div>
+    
+    <div class="stats" id="dataStats">
+      <p>Loading data statistics...</p>
+    </div>
+    
+    <div class="controls">
+      <button class="active" id="allButton">All Content</button>
+      <button id="movieButton">Movies</button>
+      <button id="tvButton">TV Shows</button>
+      <button id="playButton">▶ Play Animation</button>
+    </div>
+    
+    <div class="legend" id="legend"></div>
+    
+    <div class="viz-container">
+      <svg width="1000" height="1000" id="spiralSvg" viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid meet"></svg>
+    </div>
+    
+    <div class="tooltip" id="tooltip"></div>
+    <div class="error" id="error"></div>
+  </div>
+
+  <script>
+    // Configuration
+    const svg = d3.select("#spiralSvg");
+    const center = { x: 500, y: 500 };
+    const tooltip = d3.select("#tooltip");
+    const legend = d3.select("#legend");
+    const statsContainer = d3.select("#dataStats");
+    const errorDiv = d3.select("#error");
+    
+    // Top genres with Netflix-inspired colors
+    const genreColors = {
+      "International Movies": "#0071eb",
+      "Dramas": "#4682B4",
+      "Comedies": "#FFA500",
+      "Action & Adventure": "#B22222",
+      "Documentaries": "#2E8B57",
+      "Children & Family": "#FF69B4",
+      "Horror": "#8B0000",
+      "TV Dramas": "#9370DB",
+      "TV Comedies": "#FF6347",
+      "Other": "#888"
+    };
+    
+    let allData = [];
+    let filteredData = [];
+    let animationId = null;
+    let isPlaying = false;
+    let currentFilter = "All";
+    let topGenres = [];
+
+    // Button elements
+    const allButton = document.getElementById('allButton');
+    const movieButton = document.getElementById('movieButton');
+    const tvButton = document.getElementById('tvButton');
+    const playButton = document.getElementById('playButton');
+
+    // Button event listeners
+    allButton.addEventListener('click', () => filterData('All'));
+    movieButton.addEventListener('click', () => filterData('Movie'));
+    tvButton.addEventListener('click', () => filterData('TV Show'));
+    playButton.addEventListener('click', toggleAnimation);
+
+    // Load Netflix data
+    loadData().catch(err => {
+      errorDiv.text("Couldn't load data file. Using sample data instead.");
+      console.error("Error loading data:", err);
+      createSampleData();
+      filterData('All');
+    });
+
+    async function loadData() {
+      const data = await d3.csv("./netflix-dataset/netflix_titles.csv");
+      
+      allData = data
+        .filter(d => d.release_year && d.date_added && d.listed_in && d.type)
+        .map(d => {
+          const date = new Date(d.date_added);
+          const genres = d.listed_in.split(",").map(g => g.trim());
+          return {
+            title: d.title,
+            type: d.type,
+            year: +d.release_year,
+            yearGroup: Math.floor(+d.release_year / 5) * 5, // Group by 5-year intervals
+            genres: genres,
+            primaryGenre: genres[0],
+            month: date.getMonth(),
+            day: date.getDate()
+          };
+        })
+        .filter(d => d.year >= 2000 && d.year <= new Date().getFullYear());
+      
+      // Calculate top genres
+      const genreCounts = d3.rollup(allData, v => v.length, d => d.primaryGenre);
+      topGenres = Array.from(genreCounts.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 9)
+        .map(d => d[0]);
+      
+      updateStats();
+      createLegend();
+      filterData('All');
+    }
+
+    function createSampleData() {
+      allData = [];
+      const genres = Object.keys(genreColors);
+      const types = ["Movie", "TV Show"];
+      const currentYear = new Date().getFullYear();
+      
+      for (let year = 2000; year <= currentYear; year++) {
+        const count = 50 + Math.floor(Math.random() * 200 * (year - 2000)/(currentYear - 2000));
+        const yearGroup = Math.floor(year / 5) * 5;
+        
+        for (let i = 0; i < count; i++) {
+          allData.push({
+            title: `Sample ${year}-${i}`,
+            type: types[Math.floor(Math.random() * types.length)],
+            year: year,
+            yearGroup: yearGroup,
+            genres: [genres[Math.floor(Math.random() * genres.length)]],
+            primaryGenre: genres[Math.floor(Math.random() * genres.length)],
+            month: Math.floor(Math.random() * 12),
+            day: Math.floor(Math.random() * 28) + 1
+          });
+        }
+      }
+      
+      topGenres = Object.keys(genreColors).slice(0, 9);
+      updateStats();
+    }
+
+    function updateStats() {
+      const totalTitles = allData.length;
+      const movies = allData.filter(d => d.type === "Movie").length;
+      const tvShows = allData.filter(d => d.type === "TV Show").length;
+      const earliestYear = d3.min(allData, d => d.year);
+      const latestYear = d3.max(allData, d => d.year);
+      
+      statsContainer.html(`
+        <p><strong>Content Overview:</strong></p>
+        <p>Total: ${totalTitles.toLocaleString()} | Movies: ${movies.toLocaleString()} | TV: ${tvShows.toLocaleString()}</p>
+        <p>Years: ${earliestYear} - ${latestYear}</p>
+      `);
+    }
+
+    function createLegend() {
+      legend.selectAll("*").remove();
+      
+      topGenres.forEach(genre => {
+        legend.append("div")
+          .attr("class", "legend-item")
+          .html(`<div class="legend-color" style="background:${genreColors[genre] || genreColors["Other"]}"></div><div>${genre}</div>`);
+      });
+      
+      legend.append("div")
+        .attr("class", "legend-item")
+        .html(`<div class="legend-color" style="background:${genreColors["Other"]}"></div><div>Other</div>`);
+    }
+
+    function filterData(type) {
+      currentFilter = type;
+      filteredData = type === 'All' ? allData : allData.filter(d => d.type === type);
+      updateButtons();
+      drawSpiral();
+    }
+
+    function updateButtons() {
+      document.querySelectorAll('.controls button').forEach(btn => {
+        btn.classList.remove('active');
+      });
+      
+      if (currentFilter === 'All') allButton.classList.add('active');
+      else if (currentFilter === 'Movie') movieButton.classList.add('active');
+      else if (currentFilter === 'TV Show') tvButton.classList.add('active');
+    }
+
+    function drawSpiral(progress = 1) {
+      svg.selectAll("*").remove();
+      const g = svg.append("g").attr("transform", `translate(${center.x},${center.y})`);
+      
+      // Get unique year groups (2000, 2005, 2010, etc.)
+      const yearGroups = Array.from(new Set(filteredData.map(d => d.yearGroup))).sort((a,b) => a - b);
+      const radiusStep = 70; // Spacing between groups
+      const labelOffset = 15; // Space between ring and label
+      
+      // Draw year group circles
+      yearGroups.forEach((group, i) => {
+        const radius = radiusStep * (i + 1);
+        g.append("circle")
+          .attr("r", radius)
+          .attr("fill", "none")
+          .attr("stroke", "#eee")
+          .attr("stroke-width", 1);
+          
+        // Add SINGLE year group label at top position (12 o'clock)
+        g.append("text")
+          .attr("class", "year-group-label")
+          .attr("x", 0)
+          .attr("y", -(radius + labelOffset))
+          .attr("dy", "0.35em")
+          .attr("text-anchor", "middle")
+          .text(`${group}-${group+4}`);
+      });
+      
+      // Calculate visible points
+      const visibleCount = Math.floor(filteredData.length * progress);
+      const visiblePoints = filteredData.slice(0, visibleCount);
+      
+      // Position points in spiral
+      visiblePoints.forEach(d => {
+        const groupIndex = yearGroups.indexOf(d.yearGroup);
+        const radius = radiusStep * (groupIndex + 1);
+        // Normalize year within group (0-4) for angle calculation
+        const yearProgress = (d.year - d.yearGroup) / 5;
+        const angle = ((d.month + d.day/30) / 12 * Math.PI * 2) + (yearProgress * Math.PI * 2);
+        d.x = radius * Math.cos(angle);
+        d.y = radius * Math.sin(angle);
+      });
+      
+      // Draw points
+      g.selectAll(".content-point")
+        .data(visiblePoints)
+        .enter()
+        .append("circle")
+        .attr("class", "content-point")
+        .attr("cx", d => d.x)
+        .attr("cy", d => d.y)
+        .attr("r", 4)
+        .attr("fill", d => genreColors[d.primaryGenre] || genreColors["Other"])
+        .attr("opacity", 0.8)
+        .on("mouseover", showTooltip)
+        .on("mouseout", hideTooltip);
+    }
+
+    function showTooltip(event, d) {
+      const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", 
+                         "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      tooltip.style("opacity", 1)
+        .html(`<strong>${d.title}</strong><br>
+               ${d.type} (${d.year})<br>
+               ${d.primaryGenre}<br>
+               ${monthNames[d.month]} ${d.day}`)
+        .style("left", (event.pageX + 15) + "px")
+        .style("top", (event.pageY - 30) + "px");
+      
+      d3.select(event.currentTarget).attr("r", 6);
+    }
+
+    function hideTooltip(event) {
+      tooltip.style("opacity", 0);
+      d3.select(event.currentTarget).attr("r", 4);
+    }
+
+    function toggleAnimation() {
+      if (isPlaying) {
+        cancelAnimationFrame(animationId);
+        isPlaying = false;
+        playButton.textContent = "▶ Play Animation";
+      } else {
+        isPlaying = true;
+        playButton.textContent = "❚❚ Pause";
+        startAnimation();
+      }
+    }
+
+    function startAnimation() {
+      const duration = 10000;
+      const startTime = Date.now();
+      
+      function animate() {
+        const elapsed = Date.now() - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        
+        drawSpiral(progress);
+        
+        if (progress < 1) {
+          animationId = requestAnimationFrame(animate);
+        } else {
+          isPlaying = false;
+          playButton.textContent = "↻ Replay";
+        }
+      }
+      
+      animate();
+    }
+  </script>
+</body>
+</html>
